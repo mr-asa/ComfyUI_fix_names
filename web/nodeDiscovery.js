@@ -214,6 +214,7 @@ export function discoverPathWidgetsFromNodeDef(nodeType, nodeData) {
         widgets.push({
           ...candidate,
           index: inputIndex,
+          options: getWidgetOptions(widgetDef),
         });
       }
 

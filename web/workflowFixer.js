@@ -1,4 +1,5 @@
 import { app } from "/scripts/app.js";
+import { api } from "/scripts/api.js";
 import { getMappings, validateWorkflow, getAvailableModels, getPostfixes, logFixReport as sendFixReport } from "./mappingApi.js";
 import { basenameVariants, describeMappings, findMappingForPath } from "./pathResolver.js";
 import { PATH_NODE_REGISTRY } from "./pathNodeRegistry.js";
@@ -7,15 +8,6 @@ import {
   getDiscoveredWidgetDetailsForNode,
   getDiscoveredWidgetsForNode,
 } from "./nodeDiscovery.js";
-
-function basenameOnly(value) {
-  return String(value || "")
-    .trim()
-    .replace(/\\/g, "/")
-    .split("/")
-    .pop()
-    .toLowerCase();
-}
 
 function normalizePath(value) {
   return String(value || "")
@@ -58,51 +50,23 @@ function isLikelyModelPathValue(value) {
   return MODEL_FILE_EXTENSIONS.some((ext) => normalized.endsWith(ext));
 }
 
-function clearNodeErrors(node) {
-  if (node.flags) {
-    node.flags.error = false;
-    node.flags.invalid = false;
-  }
-  node.has_errors = false;
-  node.hasErrors = false;
-  node.error = null;
-  node.errors = null;
-  node.execution_error = null;
-  node.validation_error = null;
-  node.validationErrors = null;
-  node.widgets_errors = null;
-  node.missing = null;
-  node.invalid = false;
-  delete node.errorMessage;
-  delete node._errorMessage;
-  delete node.title_text_color;
-  if (node.widgets) {
-    for (const w of node.widgets) {
-      if (w.options?.element?.classList) {
-        w.options.element.classList.remove("error", "comfy-error");
-      }
-      if (w?.domElement?.classList) {
-        w.domElement.classList.remove("error", "comfy-error");
-      }
-    }
-  }
-  if (typeof node.setDirtyCanvas === "function") {
-    node.setDirtyCanvas(true, true);
-  }
-  const nodeEl = document.querySelector(`[data-node-id="${node.id}"]`);
-  if (nodeEl) {
-    nodeEl.classList.remove("comfy-error", "error");
-    for (const el of nodeEl.querySelectorAll(".comfy-error, .error")) {
-      el.classList.remove("comfy-error", "error");
-    }
-    const borderEl = nodeEl.querySelector(".litegraph .litegraph.canvas");
-    if (borderEl) borderEl.classList.remove("comfy-error", "error");
-  }
-}
-
 function getNameIndexForSlot(registryEntry, slotIndex) {
   const slot = registryEntry?.valueSlots?.[slotIndex];
   return Number.isInteger(slot?.nameIdx) ? slot.nameIdx : null;
+}
+
+function getInputWidgetIndex(node, widgetName) {
+  let index = 0;
+  for (const input of node.inputs || []) {
+    const inputWidgetName = input?.widget?.name || input?.name;
+    if (input?.widget || input?.type === "COMBO" || input?.type === "STRING") {
+      if (inputWidgetName === widgetName) {
+        return index;
+      }
+      index += 1;
+    }
+  }
+  return null;
 }
 
 function setWidgetValue(node, widget, widgetName, newValue) {
@@ -133,7 +97,12 @@ function setWidgetValue(node, widget, widgetName, newValue) {
   const widgetIndex = node.widgets?.findIndex((item) => item.name === widgetName);
   const detail = getDiscoveredWidgetDetailsForNode(node)
     .find((item) => item.widgetName === widgetName);
-  const fallbackIndex = widgetIndex >= 0 ? widgetIndex : detail?.index;
+  const inputWidgetIndex = getInputWidgetIndex(node, widgetName);
+  const fallbackIndex = widgetIndex >= 0
+    ? widgetIndex
+    : Number.isInteger(detail?.index)
+      ? detail.index
+      : inputWidgetIndex;
 
   if (widget) {
     widget.value = newValue;
@@ -164,26 +133,6 @@ function setWidgetValue(node, widget, widgetName, newValue) {
   if (Array.isArray(node.widgets_values) && Number.isInteger(index) && index >= 0) {
     node.widgets_values[index] = newValue;
   }
-}
-
-function clearAllNodeErrors() {
-  for (const node of app.graph._nodes || []) {
-    clearNodeErrors(node);
-  }
-
-  const allNodeEls = document.querySelectorAll("[data-node-id]");
-  for (const el of allNodeEls) {
-    el.classList.remove("error", "comfy-error");
-    const canvasEl = el.querySelector(".litegraph");
-    if (canvasEl) canvasEl.classList.remove("error", "comfy-error");
-  }
-
-  const allEls = document.querySelectorAll(".error, .comfy-error");
-  for (const el of allEls) {
-    el.classList.remove("error", "comfy-error");
-  }
-
-  app.canvas?.setDirty(true, true);
 }
 
 function createFixReport() {
@@ -257,31 +206,6 @@ async function logServerFixReport(report, remainingNodeErrors) {
   }
 }
 
-function refreshNodeVisualState(node) {
-  clearNodeErrors(node);
-
-  try {
-    if (typeof node.serialize === "function" && typeof node.configure === "function") {
-      const serialized = node.serialize();
-      node.configure(serialized);
-      clearNodeErrors(node);
-    }
-  } catch (error) {
-    console.log("[Fix Model Paths] Node visual refresh failed", node.id, node.type, error.message);
-  }
-
-  try {
-    if (typeof node.updateOutputDisplay === "function") node.updateOutputDisplay();
-    if (typeof node.onResize === "function") node.onResize();
-    if (typeof node.recomputeIO === "function") node.recomputeIO();
-  } catch {}
-
-  app.canvas?.setDirty(true, true);
-  if (typeof app.graph?.setDirtyCanvas === "function") {
-    app.graph.setDirtyCanvas(true, true);
-  }
-}
-
 function notifyGraphChanged() {
   try {
     if (typeof app.graph?.change === "function") {
@@ -290,33 +214,121 @@ function notifyGraphChanged() {
   } catch (error) {
     console.debug("[Fix Model Paths] graph.change failed", error);
   }
+
+  try {
+    const graphData = typeof app.rootGraph?.serialize === "function"
+      ? app.rootGraph.serialize()
+      : app.graph?.serialize?.();
+    api.dispatchCustomEvent("graphChanged", graphData);
+  } catch (error) {
+    console.debug("[Fix Model Paths] graphChanged event failed", error);
+  }
+}
+
+function getActiveWorkflowForReload() {
+  const isWorkflow = (candidate) => candidate?.changeTracker && typeof candidate.load === "function";
+  const candidates = [
+    app.workflow?.activeWorkflow,
+    app.workflowStore?.activeWorkflow,
+    app.workspace?.workflow?.activeWorkflow,
+    app.workspaceStore?.workflow?.activeWorkflow,
+    window.comfyAPI?.workspace?.workflow?.activeWorkflow,
+    window.comfyAPI?.workflow?.activeWorkflow,
+    window.comfyAPI?.workflowStore?.activeWorkflow,
+    window.app?.workflow?.activeWorkflow,
+    window.app?.workflowStore?.activeWorkflow,
+    window.app?.workspace?.workflow?.activeWorkflow,
+  ];
+
+  for (const candidate of candidates) {
+    if (isWorkflow(candidate)) {
+      return candidate;
+    }
+  }
+
+  const seen = new WeakSet();
+  const findInObject = (obj, depth = 0) => {
+    if (!obj || typeof obj !== "object" || depth > 4 || seen.has(obj)) {
+      return null;
+    }
+    seen.add(obj);
+
+    if (isWorkflow(obj)) {
+      return obj;
+    }
+
+    let values;
+    try {
+      values = Object.values(obj);
+    } catch {
+      return null;
+    }
+
+    for (const value of values) {
+      if (isWorkflow(value)) {
+        return value;
+      }
+      if (value && typeof value === "object") {
+        const found = findInObject(value, depth + 1);
+        if (found) {
+          return found;
+        }
+      }
+    }
+
+    return null;
+  };
+
+  return findInObject(app) || findInObject(window.comfyAPI);
 }
 
 export function autoResolveWidget(registryEntry, widgetValue, node, allAvailable) {
   return autoResolveWidgetWithPostfixes(registryEntry, widgetValue, node, allAvailable, []);
 }
 
-export function autoResolveWidgetWithPostfixes(registryEntry, widgetValue, node, allAvailable, postfixes = []) {
+function getRuntimeWidgetOptions(widget) {
+  const values = widget?.options?.values || widget?.options?.items || widget?.options;
+  if (Array.isArray(values)) return values;
+  return null;
+}
+
+function getRuntimePathWidgetNames(node) {
+  const names = [];
+  for (const widget of node.widgets || []) {
+    const options = getRuntimeWidgetOptions(widget);
+    const value = widget?.value;
+    const hasModelOption = Array.isArray(options) && options.some((option) => isLikelyModelPathValue(option));
+    if ((typeof value === "string" && isLikelyModelPathValue(value)) || hasModelOption) {
+      names.push(widget.name || widget.type || `widget_${names.length}`);
+    }
+  }
+  return [...new Set(names)];
+}
+
+function findAvailableModelMatch(models, wantedVariants, postfixes) {
+  if (!Array.isArray(models)) return null;
+
+  return models.find((m) => {
+    const variants = basenameVariants(m, postfixes);
+    return variants.some((variant) => wantedVariants.includes(variant));
+  }) || null;
+}
+
+export function autoResolveWidgetWithPostfixes(registryEntry, widgetValue, node, allAvailable, postfixes = [], widgetOptions = null) {
   const wantedVariants = basenameVariants(widgetValue, postfixes);
   if (wantedVariants.length === 0) return null;
 
+  const optionMatch = findAvailableModelMatch(widgetOptions, wantedVariants, postfixes);
+  if (optionMatch) return optionMatch;
+
   if (registryEntry?.modelType) {
     const models = allAvailable?.[registryEntry.modelType];
-    if (Array.isArray(models)) {
-      const match = models.find((m) => {
-        const variants = basenameVariants(m, postfixes);
-        return variants.some((variant) => wantedVariants.includes(variant));
-      });
-      if (match) return match;
-    }
+    const match = findAvailableModelMatch(models, wantedVariants, postfixes);
+    if (match) return match;
   }
 
   for (const models of Object.values(allAvailable || {})) {
-    if (!Array.isArray(models)) continue;
-    const match = models.find((m) => {
-      const variants = basenameVariants(m, postfixes);
-      return variants.some((variant) => wantedVariants.includes(variant));
-    });
+    const match = findAvailableModelMatch(models, wantedVariants, postfixes);
     if (match) return match;
   }
 
@@ -376,6 +388,7 @@ function getPathWidgetValue(node, widgetName) {
     return {
       widget,
       value: widget.value ?? node.widgets_values?.[index],
+      options: getRuntimeWidgetOptions(widget),
     };
   }
 
@@ -385,12 +398,23 @@ function getPathWidgetValue(node, widgetName) {
     return {
       widget: null,
       value: node.widgets_values[detail.index],
+      options: detail.options,
+    };
+  }
+
+  const inputWidgetIndex = getInputWidgetIndex(node, widgetName);
+  if (Number.isInteger(inputWidgetIndex) && Array.isArray(node.widgets_values)) {
+    return {
+      widget: null,
+      value: node.widgets_values[inputWidgetIndex],
+      options: null,
     };
   }
 
   return {
     widget: null,
     value: undefined,
+    options: null,
   };
 }
 
@@ -442,8 +466,12 @@ function getGraphLink(graph, linkId) {
   return graph.links?.[linkId] || null;
 }
 
+function getGraphNodes(graph) {
+  return graph?._nodes || graph?.nodes || [];
+}
+
 function getNodeById(graph, nodeId) {
-  return graph._nodes?.find((node) => String(node.id) === String(nodeId)) || null;
+  return getGraphNodes(graph).find((node) => String(node.id) === String(nodeId)) || null;
 }
 
 function collectGraphs(graph, seen = new Set()) {
@@ -453,7 +481,14 @@ function collectGraphs(graph, seen = new Set()) {
   seen.add(graph);
 
   const graphs = [graph];
-  for (const node of graph._nodes || []) {
+  const definitionSubgraphs = graph.definitions?.subgraphs || graph.extra?.definitions?.subgraphs || [];
+  for (const subgraph of definitionSubgraphs) {
+    if (subgraph?.nodes || subgraph?._nodes) {
+      graphs.push(...collectGraphs(subgraph, seen));
+    }
+  }
+
+  for (const node of getGraphNodes(graph)) {
     const candidates = [
       node.subgraph,
       node.graph,
@@ -544,6 +579,37 @@ function getLinkedStringWidgets(graph, targetNode, inputName) {
   return widgets;
 }
 
+async function reloadCurrentGraphLikeUndoRedo() {
+  if (typeof app.loadGraphData !== "function") {
+    notifyGraphChanged();
+    return;
+  }
+
+  const workflow = getActiveWorkflowForReload();
+  if (!workflow) {
+    console.warn("[Fix Model Paths] Active workflow object not found; skipping loadGraphData refresh to avoid opening an untitled workflow");
+    notifyGraphChanged();
+    return;
+  }
+
+  const graphData = typeof app.rootGraph?.serialize === "function"
+    ? app.rootGraph.serialize()
+    : app.graph?.serialize?.();
+  if (!graphData) {
+    notifyGraphChanged();
+    return;
+  }
+
+  await app.loadGraphData(graphData, false, false, workflow, {
+    showMissingModelsDialog: false,
+    showMissingNodesDialog: false,
+    checkForRerouteMigration: false,
+  });
+  workflow.changeTracker?.reset?.(graphData);
+  workflow.changeTracker?.restore?.();
+  notifyGraphChanged();
+}
+
 export function scanGraphForPathWidgets(graph, mappings, options = {}) {
   const errorWidgetMap = options.nodeErrors
     ? buildErrorWidgetMap(options.nodeErrors)
@@ -556,19 +622,20 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
   const graphs = collectGraphs(graph);
 
   for (const localGraph of graphs) {
-  for (const node of localGraph._nodes || []) {
+  for (const node of getGraphNodes(localGraph)) {
     let registryEntry = PATH_NODE_REGISTRY.find((entry) => entry.matches(node));
     const discoveredEntry = getDiscoveredNodeEntryForNode(node);
     const discoveredWidgets = discoveredEntry?.widgets || [];
+    const runtimeWidgets = getRuntimePathWidgetNames(node);
 
     const objectPathWidgets = getObjectPathWidgets(node);
 
-    if (!registryEntry && discoveredWidgets.length === 0 && objectPathWidgets.length === 0) {
+    if (!registryEntry && discoveredWidgets.length === 0 && runtimeWidgets.length === 0 && objectPathWidgets.length === 0) {
       continue;
     }
 
     if (!registryEntry) {
-      registryEntry = discoveredEntry || { widgets: [], modelType: null };
+      registryEntry = discoveredEntry || { widgets: runtimeWidgets, modelType: null, source: "runtime" };
     }
 
     const nodeIsInErrors = errorWidgetMap.has(String(node.id));
@@ -577,7 +644,7 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
     const effectiveWidgets = registryWidgetsForNode(node, registryEntry);
 
     for (const widgetName of effectiveWidgets) {
-      const { widget, value } = getPathWidgetValue(node, widgetName);
+      const { widget, value, options: widgetOptions } = getPathWidgetValue(node, widgetName);
 
       if (typeof value !== "string") {
         continue;
@@ -588,7 +655,7 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
         continue;
       }
 
-      pathWidgets.push({ widget, widgetName, value });
+      pathWidgets.push({ widget, widgetName, value, widgetOptions });
     }
 
     if (options.onlyErrorNodes || registryEntry?.source === "discovered") {
@@ -718,7 +785,14 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
       }
 
       if (!replacement && options.autoResolve && canAttemptAutoResolve) {
-        replacement = autoResolveWidgetWithPostfixes(registryEntry, pathWidget.value, node, availableModels, options.postfixes || []);
+        replacement = autoResolveWidgetWithPostfixes(
+          registryEntry,
+          pathWidget.value,
+          node,
+          availableModels,
+          options.postfixes || [],
+          pathWidget.widgetOptions,
+        );
         if (replacement) {
           autoResolved = true;
           console.log("[Fix Model Paths] Auto-resolved", pathWidget.value, "->", replacement, "on node", node.id, node.type);
@@ -828,8 +902,6 @@ export async function fixAllModelPaths() {
 
   console.log("[Fix Model Paths] Fixes found:", fixes.length, fixes);
 
-  const autoResolvedFixes = [];
-
   for (const fix of fixes) {
     if (fix.isSpecialSlot) {
       const nameIdx = getNameIndexForSlot(fix.registryEntry, fix.slotIndex);
@@ -867,11 +939,6 @@ export async function fixAllModelPaths() {
       source: fix.autoResolved ? "auto-resolve" : "mapping",
     });
 
-    clearNodeErrors(fix.node);
-
-    if (fix.autoResolved) {
-      autoResolvedFixes.push(fix);
-    }
   }
 
   const fixedNodeIds = new Set();
@@ -889,11 +956,6 @@ export async function fixAllModelPaths() {
     }
   }
 
-  for (const nodeId of fixedNodeIds) {
-    const node = app.graph._nodes?.find((n) => String(n.id) === nodeId);
-    if (node) clearNodeErrors(node);
-  }
-
   app.canvas?.setDirty(true, true);
   if (typeof app.graph?.setDirtyCanvas === "function") {
     app.graph.setDirtyCanvas(true, true);
@@ -904,17 +966,10 @@ export async function fixAllModelPaths() {
   const nextValidation = await validateWorkflow(nextPromptResult.output);
   const remainingNodeIds = new Set(Object.keys(nextValidation.node_errors || {}));
 
-  for (const nodeId of fixedNodeIds) {
-    if (remainingNodeIds.has(String(nodeId))) {
-      continue;
-    }
-
-    const node = app.graph._nodes?.find((n) => String(n.id) === nodeId);
-    if (node) refreshNodeVisualState(node);
-  }
+  await reloadCurrentGraphLikeUndoRedo();
 
   const resolvedNodeIds = new Set([...fixedNodeIds].filter((nodeId) => !remainingNodeIds.has(String(nodeId))));
-  console.log("[Fix Model Paths] Locally refreshed resolved node visuals:", [...resolvedNodeIds]);
+  console.log("[Fix Model Paths] Reloaded workflow state. Resolved fixed nodes:", [...resolvedNodeIds]);
 
   app.canvas?.setDirty(true, true);
   notifyGraphChanged();

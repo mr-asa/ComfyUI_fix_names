@@ -9,7 +9,11 @@ import {
   saveFixedNode,
   lastCaptures,
 } from "./nodeFixCapture.js";
-import { discoverPathWidgetsFromNodeDef, getDiscoveredWidgetsForNode } from "./nodeDiscovery.js";
+import {
+  discoverPathWidgetsFromNodeDef,
+  getDiscoveredNodeEntryForNode,
+  getDiscoveredWidgetsForNode,
+} from "./nodeDiscovery.js";
 import { loadNodeLibrary, refreshNodeLibrary, showAddNodeToLibraryDialog } from "./nodeLibrary.js";
 import { getPostfixes, savePostfixes } from "./mappingApi.js";
 import { registerPathNodeRegistryEntry } from "./pathNodeRegistry.js";
@@ -163,20 +167,27 @@ async function onNodeMenuActionWithLibrary(node, action) {
         const captures = lastCaptures || [];
         const widgetNames = captures.map((c) => c.widgetName);
         const firstCapture = captures[0];
-        showAddNodeToLibraryDialog(node, widgetNames, firstCapture ? { before: firstCapture.before, after: result.after || "" } : null);
+        showAddNodeToLibraryDialog(
+          node,
+          widgetNames,
+          firstCapture ? { before: firstCapture.before, after: result.after || "" } : null,
+          getDiscoveredNodeEntryForNode(node)?.modelType || "",
+        );
       }
       await refreshNodeLibrary();
       showToast(result.message);
       return;
     }
 
+    const pathWidgets = getPathWidgetNames(node);
     const allStringWidgets = getAllStringWidgets(node);
-    if (allStringWidgets.length === 0) {
+    const targetWidgets = pathWidgets.length > 0 ? pathWidgets : allStringWidgets;
+    if (targetWidgets.length === 0) {
       showToast("No string path widgets found on this node");
       return;
     }
 
-    const captures = fixNode(node, allStringWidgets, {
+    const captures = fixNode(node, targetWidgets, {
       onSave: () => onNodeMenuActionWithLibrary(node, "save"),
       onCancel: () => onNodeMenuActionWithLibrary(node, "cancel"),
     });
@@ -269,7 +280,6 @@ app.registerExtension({
     const registryEntry = PATH_NODE_REGISTRY.find((entry) => entry.matches(node));
     const discoveredWidgets = getDiscoveredWidgetsForNode(node);
     const hasStringWidgets = getAllStringWidgets(node).length > 0;
-    const isKnownNode = !!registryEntry || discoveredWidgets.length > 0;
 
     if (registryEntry || discoveredWidgets.length > 0 || hasStringWidgets) {
       items.push({
@@ -278,7 +288,7 @@ app.registerExtension({
       });
     }
 
-    if (!isKnownNode && hasStringWidgets) {
+    if (!registryEntry && hasStringWidgets) {
       items.push({
         content: "Fix Node & Add to Library 🦊",
         callback: () => onNodeMenuActionWithLibrary(node, "fix"),

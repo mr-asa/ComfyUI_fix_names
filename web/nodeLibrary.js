@@ -13,6 +13,7 @@ const KNOWN_MODEL_TYPES = [
   "upscale_models",
   "embeddings",
   "text_encoders",
+  "rife",
 ];
 
 let libraryCache = null;
@@ -36,8 +37,9 @@ function buildModelTypeOptions() {
   return KNOWN_MODEL_TYPES.map((t) => `<option value="${t}">${t}</option>`).join("");
 }
 
-export function showAddNodeToLibraryDialog(node, widgetNames, beforeAfter) {
+export function showAddNodeToLibraryDialog(node, widgetNames, beforeAfter, suggestedModelType = "") {
   const nodeType = node.type || node.comfyClass || "Unknown";
+  const modelTypeValue = suggestedModelType || KNOWN_MODEL_TYPES[0];
 
   const overlay = document.createElement("div");
   overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100000;display:flex;align-items:center;justify-content:center;font-family:system-ui;";
@@ -53,9 +55,10 @@ export function showAddNodeToLibraryDialog(node, widgetNames, beforeAfter) {
     </div>
     <div style="margin-bottom:12px;font-size:13px;">
       <div style="color:#aaa;">Model type:</div>
-      <select id="mpl-model-type" style="width:100%;padding:6px;background:#2a2a4a;color:#e0e0e0;border:1px solid #555;border-radius:4px;margin-top:4px;">
+      <input id="mpl-model-type" list="mpl-model-type-options" value="${escapeHtml(modelTypeValue)}" style="width:100%;box-sizing:border-box;padding:6px;background:#2a2a4a;color:#e0e0e0;border:1px solid #555;border-radius:4px;margin-top:4px;">
+      <datalist id="mpl-model-type-options">
         ${buildModelTypeOptions()}
-      </select>
+      </datalist>
     </div>
     <div style="margin-bottom:12px;font-size:13px;">
       <div style="color:#aaa;">Widgets to track:</div>
@@ -88,8 +91,13 @@ export function showAddNodeToLibraryDialog(node, widgetNames, beforeAfter) {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
 
   dialog.querySelector("#mpl-save").addEventListener("click", async () => {
-    const modelType = dialog.querySelector("#mpl-model-type").value;
+    const modelType = dialog.querySelector("#mpl-model-type").value.trim();
     const checkedWidgets = [...dialog.querySelectorAll("#mpl-widget-list input:checked")].map((cb) => cb.value);
+
+    if (!modelType) {
+      showToast("Enter model type");
+      return;
+    }
 
     if (checkedWidgets.length === 0) {
       showToast("Select at least one widget");
