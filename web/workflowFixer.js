@@ -323,6 +323,8 @@ function findAvailableModelMatch(models, wantedVariants, postfixes, options = {}
 
   const normalizedWanted = new Set(wantedVariants.map((value) => normalizePath(value)));
   const ignoredExactValue = options.ignoreExactValue ? normalizePath(options.ignoreExactValue) : null;
+  const ignoredBasename = ignoredExactValue ? ignoredExactValue.split("/").pop() : null;
+  const ignoreBasenameOnly = Boolean(options.ignoreBasenameOnly);
   const exactMatch = models.find((model) => {
     const normalizedModel = normalizePath(model);
     return normalizedWanted.has(normalizedModel) && normalizedModel !== ignoredExactValue;
@@ -330,7 +332,11 @@ function findAvailableModelMatch(models, wantedVariants, postfixes, options = {}
   if (exactMatch) return exactMatch;
 
   return models.find((m) => {
-    if (ignoredExactValue && normalizePath(m) === ignoredExactValue) {
+    const normalizedModel = normalizePath(m);
+    if (ignoredExactValue && normalizedModel === ignoredExactValue) {
+      return false;
+    }
+    if (ignoreBasenameOnly && ignoredBasename && normalizedModel.split("/").pop() === ignoredBasename) {
       return false;
     }
     const variants = basenameVariants(m, postfixes);
@@ -351,6 +357,7 @@ export function autoResolveWidgetWithPostfixes(registryEntry, widgetValue, node,
 
   const optionMatch = findAvailableModelMatch(widgetOptions, wantedVariants, postfixes, {
     ignoreExactValue: widgetValue,
+    ignoreBasenameOnly: true,
   });
   if (optionMatch) return optionMatch;
 
@@ -771,7 +778,9 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
           replacement = autoResolveWidgetWithPostfixes(registryEntry, specialValue, node, availableModels, options.postfixes || []);
           if (replacement) {
             autoResolved = true;
-            console.log("[Fix Model Paths] Auto-resolved", specialValue, "->", replacement, "on node", node.id, node.type, "slot", slotName);
+            if (normalizePath(replacement) !== normalizePath(specialValue)) {
+              console.log("[Fix Model Paths] Auto-resolved", specialValue, "->", replacement, "on node", node.id, node.type, "slot", slotName);
+            }
           }
         }
 
@@ -845,7 +854,9 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
         );
         if (replacement) {
           autoResolved = true;
-          console.log("[Fix Model Paths] Auto-resolved", pathWidget.value, "->", replacement, "on node", node.id, node.type);
+          if (normalizePath(replacement) !== normalizePath(pathWidget.value)) {
+            console.log("[Fix Model Paths] Auto-resolved", pathWidget.value, "->", replacement, "on node", node.id, node.type);
+          }
         }
       }
 
