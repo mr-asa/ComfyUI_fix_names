@@ -11,6 +11,7 @@ import {
 } from "./nodeFixCapture.js";
 import { discoverPathWidgetsFromNodeDef, getDiscoveredWidgetsForNode } from "./nodeDiscovery.js";
 import { loadNodeLibrary, refreshNodeLibrary, showAddNodeToLibraryDialog } from "./nodeLibrary.js";
+import { getPostfixes, savePostfixes } from "./mappingApi.js";
 import { registerPathNodeRegistryEntry } from "./pathNodeRegistry.js";
 
 const EXTENSION_NAME = "fix_names.fixModelPaths";
@@ -50,6 +51,31 @@ async function onFixAllPaths() {
   } catch (error) {
     console.error(error);
     showToast(`Fix Model Paths failed: ${error.message}`);
+  }
+}
+
+async function onEditPostfixes() {
+  try {
+    const current = await getPostfixes();
+    const value = window.prompt(
+      "Model name postfixes, comma-separated. Example: kj, fp8, q4_k_s",
+      current.join(", "),
+    );
+
+    if (value == null) {
+      return;
+    }
+
+    const postfixes = value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const result = await savePostfixes(postfixes);
+    showToast(`Saved ${result.postfixes?.length || 0} postfix(es)`);
+  } catch (error) {
+    console.error(error);
+    showToast(`Postfix edit failed: ${error.message}`);
   }
 }
 
@@ -212,8 +238,12 @@ app.registerExtension({
     return [
       null,
       {
-        content: "Fix Model Paths",
+        content: "Fix Model Paths 🦊",
         callback: onFixAllPaths,
+      },
+      {
+        content: "Edit Model Postfixes 🦊",
+        callback: onEditPostfixes,
       },
     ];
   },
@@ -227,11 +257,11 @@ app.registerExtension({
         : () => onNodeMenuAction(node, "save");
 
       items.push({
-        content: "Save Fixed",
+        content: "Save Fixed 🦊",
         callback: saveAction,
       });
       items.push({
-        content: "Cancel Fix",
+        content: "Cancel Fix 🦊",
         callback: () => onNodeMenuAction(node, "cancel"),
       });
     }
@@ -243,14 +273,14 @@ app.registerExtension({
 
     if (registryEntry || discoveredWidgets.length > 0 || hasStringWidgets) {
       items.push({
-        content: "Fix Node",
+        content: "Fix Node 🦊",
         callback: () => onNodeMenuAction(node, "fix"),
       });
     }
 
     if (!isKnownNode && hasStringWidgets) {
       items.push({
-        content: "Fix Node & Add to Library",
+        content: "Fix Node & Add to Library 🦊",
         callback: () => onNodeMenuActionWithLibrary(node, "fix"),
       });
     }

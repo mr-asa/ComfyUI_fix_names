@@ -101,3 +101,31 @@ export async function logFixReport(report) {
 
   return response.json();
 }
+
+export async function getPostfixes() {
+  const response = await fetch("/fix_model_paths/postfixes", {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to load postfixes: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return Array.isArray(data) ? data : [];
+}
+
+export async function savePostfixes(postfixes) {
+  const response = await fetch("/fix_model_paths/postfixes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ postfixes }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to save postfixes: ${response.status}`);
+  }
+
+  return response.json();
+}

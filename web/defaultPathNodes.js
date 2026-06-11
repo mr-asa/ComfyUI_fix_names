@@ -30,6 +30,12 @@ export const DEFAULT_PATH_NODE_LIBRARY = [
     widgets: ["vae_name"],
   },
   {
+    nodeType: "UNETLoader",
+    comfyClass: "UNETLoader",
+    modelType: "unet",
+    widgets: ["unet_name"],
+  },
+  {
     nodeType: "ControlNetLoader",
     comfyClass: "ControlNetLoader",
     modelType: "controlnet",

@@ -12,6 +12,7 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY",
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MAPPING_FILE = os.path.join(BASE_DIR, "model_path_mappings.local.json")
 NODE_LIBRARY_FILE = os.path.join(BASE_DIR, "custom_node_library.local.json")
+POSTFIX_FILE = os.path.join(BASE_DIR, "model_name_postfixes.local.json")
 
 
 def read_mappings():
@@ -49,6 +50,36 @@ def write_node_library(items):
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=2)
     os.replace(tmp_path, NODE_LIBRARY_FILE)
+
+
+def read_postfixes():
+    if not os.path.exists(POSTFIX_FILE):
+        return []
+
+    try:
+        with open(POSTFIX_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return []
+        return [str(item).strip() for item in data if str(item).strip()]
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def write_postfixes(items):
+    normalized = []
+    seen = set()
+    for item in items:
+        value = str(item).strip()
+        key = value.lower()
+        if value and key not in seen:
+            normalized.append(value)
+            seen.add(key)
+
+    tmp_path = f"{POSTFIX_FILE}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(normalized, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, POSTFIX_FILE)
 
 
 def _log_report_items(title, items, fields):
@@ -217,3 +248,26 @@ async def save_node_library_entry(request):
 
     write_node_library(items)
     return web.json_response({"ok": True, "library": items})
+
+
+@server.PromptServer.instance.routes.get("/fix_model_paths/postfixes")
+async def get_model_name_postfixes(request):
+    try:
+        return web.json_response(read_postfixes())
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@server.PromptServer.instance.routes.post("/fix_model_paths/postfixes")
+async def save_model_name_postfixes(request):
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    postfixes = payload.get("postfixes")
+    if not isinstance(postfixes, list):
+        return web.json_response({"error": "postfixes must be an array"}, status=400)
+
+    write_postfixes(postfixes)
+    return web.json_response({"ok": True, "postfixes": read_postfixes()})

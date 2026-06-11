@@ -16,12 +16,12 @@ export function installLegacyCanvasMenu(onFixAllPaths) {
         const options = originalCanvasMenu.apply(this, args) || [];
         return [
           ...options,
-          null,
-          {
-            content: "Fix Model Paths",
-            callback: onFixAllPaths,
-          },
-        ];
+        null,
+        {
+          content: "Fix Model Paths 🦊",
+          callback: onFixAllPaths,
+        },
+      ];
       };
   }
 }

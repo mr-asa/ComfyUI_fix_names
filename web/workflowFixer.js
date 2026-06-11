@@ -1,6 +1,6 @@
 import { app } from "/scripts/app.js";
-import { getMappings, validateWorkflow, getAvailableModels, logFixReport as sendFixReport } from "./mappingApi.js";
-import { findMappingForPath } from "./pathResolver.js";
+import { getMappings, validateWorkflow, getAvailableModels, getPostfixes, logFixReport as sendFixReport } from "./mappingApi.js";
+import { basenameVariants, describeMappings, findMappingForPath } from "./pathResolver.js";
 import { PATH_NODE_REGISTRY } from "./pathNodeRegistry.js";
 import {
   getDiscoveredNodeEntryForNode,
@@ -28,7 +28,34 @@ function normalizePath(value) {
 
 function isSkippablePathValue(value) {
   const normalized = normalizePath(value);
-  return !normalized || normalized === "none" || normalized === "[none]" || normalized === "null";
+  return (
+    !normalized ||
+    normalized === "none" ||
+    normalized === "[none]" ||
+    normalized === "null" ||
+    normalized === "fixed" ||
+    normalized === "randomize" ||
+    normalized === "increment" ||
+    normalized === "decrement"
+  );
+}
+
+const MODEL_FILE_EXTENSIONS = [
+  ".safetensors",
+  ".ckpt",
+  ".pt",
+  ".pth",
+  ".bin",
+  ".gguf",
+];
+
+function isLikelyModelPathValue(value) {
+  const text = String(value || "").trim();
+  const normalized = normalizePath(text);
+  if (!normalized || text.includes("\n") || normalized.startsWith("http://") || normalized.startsWith("https://")) {
+    return false;
+  }
+  return MODEL_FILE_EXTENSIONS.some((ext) => normalized.endsWith(ext));
 }
 
 function clearNodeErrors(node) {
@@ -79,6 +106,30 @@ function getNameIndexForSlot(registryEntry, slotIndex) {
 }
 
 function setWidgetValue(node, widget, widgetName, newValue) {
+  if (typeof widgetName === "string" && widgetName.startsWith("object:")) {
+    const path = widgetName
+      .slice("object:".length)
+      .split("/")
+      .filter(Boolean)
+      .map((part) => decodeURIComponent(part));
+    let cursor = node.widgets_values;
+    for (let i = 0; i < path.length - 1; i++) {
+      cursor = cursor?.[path[i]];
+    }
+    if (cursor && typeof cursor === "object" && path.length > 0) {
+      cursor[path[path.length - 1]] = newValue;
+    }
+    return;
+  }
+
+  if (widgetName.startsWith("inline_")) {
+    const index = parseInt(widgetName.replace("inline_", ""), 10);
+    if (Array.isArray(node.widgets_values) && Number.isInteger(index)) {
+      node.widgets_values[index] = newValue;
+    }
+    return;
+  }
+
   const widgetIndex = node.widgets?.findIndex((item) => item.name === widgetName);
   const detail = getDiscoveredWidgetDetailsForNode(node)
     .find((item) => item.widgetName === widgetName);
@@ -242,20 +293,30 @@ function notifyGraphChanged() {
 }
 
 export function autoResolveWidget(registryEntry, widgetValue, node, allAvailable) {
-  const wanted = basenameOnly(widgetValue);
-  if (!wanted) return null;
+  return autoResolveWidgetWithPostfixes(registryEntry, widgetValue, node, allAvailable, []);
+}
+
+export function autoResolveWidgetWithPostfixes(registryEntry, widgetValue, node, allAvailable, postfixes = []) {
+  const wantedVariants = basenameVariants(widgetValue, postfixes);
+  if (wantedVariants.length === 0) return null;
 
   if (registryEntry?.modelType) {
     const models = allAvailable?.[registryEntry.modelType];
     if (Array.isArray(models)) {
-      const match = models.find((m) => basenameOnly(m) === wanted);
+      const match = models.find((m) => {
+        const variants = basenameVariants(m, postfixes);
+        return variants.some((variant) => wantedVariants.includes(variant));
+      });
       if (match) return match;
     }
   }
 
   for (const models of Object.values(allAvailable || {})) {
     if (!Array.isArray(models)) continue;
-    const match = models.find((m) => basenameOnly(m) === wanted);
+    const match = models.find((m) => {
+      const variants = basenameVariants(m, postfixes);
+      return variants.some((variant) => wantedVariants.includes(variant));
+    });
     if (match) return match;
   }
 
@@ -333,6 +394,156 @@ function getPathWidgetValue(node, widgetName) {
   };
 }
 
+function objectPathToWidgetName(path) {
+  return `object:${path.map((part) => encodeURIComponent(String(part))).join("/")}`;
+}
+
+function collectObjectStringWidgets(value, path = [], results = []) {
+  if (typeof value === "string") {
+    if (path.length > 1 && isLikelyModelPathValue(value)) {
+      results.push({
+        widget: null,
+        widgetName: objectPathToWidgetName(path),
+        displayWidgetName: path.join("."),
+        value,
+      });
+    }
+    return results;
+  }
+
+  if (!value || typeof value !== "object") {
+    return results;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectObjectStringWidgets(item, [...path, index], results));
+    return results;
+  }
+
+  for (const [key, item] of Object.entries(value)) {
+    collectObjectStringWidgets(item, [...path, key], results);
+  }
+
+  return results;
+}
+
+function getObjectPathWidgets(node) {
+  if (!node.widgets_values || typeof node.widgets_values !== "object") {
+    return [];
+  }
+  return collectObjectStringWidgets(node.widgets_values);
+}
+
+function getGraphLink(graph, linkId) {
+  if (linkId == null) return null;
+  if (Array.isArray(graph.links)) {
+    return graph.links.find((link) => link && link.id === linkId) || graph.links[linkId] || null;
+  }
+  return graph.links?.[linkId] || null;
+}
+
+function getNodeById(graph, nodeId) {
+  return graph._nodes?.find((node) => String(node.id) === String(nodeId)) || null;
+}
+
+function collectGraphs(graph, seen = new Set()) {
+  if (!graph || seen.has(graph)) {
+    return [];
+  }
+  seen.add(graph);
+
+  const graphs = [graph];
+  for (const node of graph._nodes || []) {
+    const candidates = [
+      node.subgraph,
+      node.graph,
+      node.innerGraph,
+      node.properties?.subgraph,
+      node.properties?.graph,
+    ];
+    for (const candidate of candidates) {
+      if (candidate?._nodes) {
+        graphs.push(...collectGraphs(candidate, seen));
+      }
+    }
+  }
+
+  return graphs;
+}
+
+function findNodeInGraphs(graphs, nodeId) {
+  for (const graph of graphs) {
+    const node = getNodeById(graph, nodeId);
+    if (node) return node;
+  }
+  return null;
+}
+
+function getLinkedSourceNode(graph, node, inputName) {
+  const input = node.inputs?.find((item) => item.name === inputName);
+  if (!input || input.link == null) {
+    return null;
+  }
+
+  const link = getGraphLink(graph, input.link);
+  const originId = link?.origin_id ?? link?.originId ?? link?.[1];
+  return originId == null ? null : getNodeById(graph, originId);
+}
+
+function getLinkedStringWidgets(graph, targetNode, inputName) {
+  const sourceNode = getLinkedSourceNode(graph, targetNode, inputName);
+  if (!sourceNode) {
+    return [];
+  }
+
+  const widgets = [];
+  for (const widget of sourceNode.widgets || []) {
+    const value = widget?.value;
+    if (typeof value === "string" && !isSkippablePathValue(value)) {
+      widgets.push({
+        node: sourceNode,
+        widget,
+        widgetName: widget.name || widget.type || "value",
+        value,
+        sourceInputName: inputName,
+        targetNode,
+      });
+    }
+  }
+
+  if (widgets.length === 0 && Array.isArray(sourceNode.widgets_values)) {
+    for (let i = 0; i < sourceNode.widgets_values.length; i++) {
+      const value = sourceNode.widgets_values[i];
+      if (typeof value === "string" && !isSkippablePathValue(value)) {
+        widgets.push({
+          node: sourceNode,
+          widget: null,
+          widgetName: `inline_${i}`,
+          value,
+          sourceInputName: inputName,
+          targetNode,
+        });
+      }
+    }
+  }
+
+  if (widgets.length === 0) {
+    for (const item of getObjectPathWidgets(sourceNode)) {
+      widgets.push({
+        node: sourceNode,
+        widget: null,
+        widgetName: item.widgetName,
+        displayWidgetName: item.displayWidgetName,
+        value: item.value,
+        sourceInputName: inputName,
+        targetNode,
+      });
+    }
+  }
+
+  return widgets;
+}
+
 export function scanGraphForPathWidgets(graph, mappings, options = {}) {
   const errorWidgetMap = options.nodeErrors
     ? buildErrorWidgetMap(options.nodeErrors)
@@ -342,22 +553,25 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
   const availableModels = options.availableModels || {};
   const report = options.report;
 
-  for (const node of graph._nodes || []) {
+  const graphs = collectGraphs(graph);
+
+  for (const localGraph of graphs) {
+  for (const node of localGraph._nodes || []) {
     let registryEntry = PATH_NODE_REGISTRY.find((entry) => entry.matches(node));
     const discoveredEntry = getDiscoveredNodeEntryForNode(node);
     const discoveredWidgets = discoveredEntry?.widgets || [];
 
-    if (!registryEntry && discoveredWidgets.length === 0) {
+    const objectPathWidgets = getObjectPathWidgets(node);
+
+    if (!registryEntry && discoveredWidgets.length === 0 && objectPathWidgets.length === 0) {
       continue;
     }
 
     if (!registryEntry) {
-      registryEntry = discoveredEntry;
+      registryEntry = discoveredEntry || { widgets: [], modelType: null };
     }
 
-    if (options.onlyErrorNodes && !errorWidgetMap.has(String(node.id))) {
-      continue;
-    }
+    const nodeIsInErrors = errorWidgetMap.has(String(node.id));
 
     const pathWidgets = [];
     const effectiveWidgets = registryWidgetsForNode(node, registryEntry);
@@ -377,41 +591,84 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
       pathWidgets.push({ widget, widgetName, value });
     }
 
+    if (options.onlyErrorNodes || registryEntry?.source === "discovered") {
+      for (const objectWidget of objectPathWidgets) {
+        pathWidgets.push(objectWidget);
+      }
+    }
+
+    const errorInfo = errorWidgetMap.get(String(node.id));
+    const linkedInputNames = errorInfo?.hasInputName
+      ? [...errorInfo.inputNames].filter((name) => effectiveWidgets.includes(name))
+      : [];
+    const linkedInputNameSet = new Set();
+    for (const inputName of linkedInputNames) {
+      const linkedWidgets = getLinkedStringWidgets(localGraph, node, inputName);
+      if (linkedWidgets.length === 0) {
+        continue;
+      }
+      linkedInputNameSet.add(inputName);
+      for (const linkedWidget of linkedWidgets) {
+        pathWidgets.push({
+          ...linkedWidget,
+          widgetName: `${inputName} <- ${linkedWidget.displayWidgetName || linkedWidget.widgetName}`,
+          linkedWidgetName: linkedWidget.widgetName,
+          linkedInputName: inputName,
+          isLinkedInput: true,
+        });
+      }
+    }
+    if (linkedInputNameSet.size > 0) {
+      for (let i = pathWidgets.length - 1; i >= 0; i--) {
+        if (!pathWidgets[i].isLinkedInput && linkedInputNameSet.has(pathWidgets[i].widgetName)) {
+          pathWidgets.splice(i, 1);
+        }
+      }
+    }
+
     if (registryEntry?.getWidgetsFromValues && typeof registryEntry.getWidgetsFromValues === "function") {
       const specialValues = registryEntry.getWidgetsFromValues(node);
       const specialSlots = registryEntry.widgets;
 
       for (let i = 0; i < specialValues.length; i++) {
         const slotName = specialSlots[i];
-        if (
-          options.onlyErrorNodes &&
-          !isWidgetInError(node.id, slotName, errorWidgetMap, specialValues.length)
-        ) {
+        const widgetIsInErrors = isWidgetInError(node.id, slotName, errorWidgetMap, specialValues.length);
+        if (options.onlyErrorNodes && nodeIsInErrors && !widgetIsInErrors) {
           continue;
         }
 
-        let replacement = findMappingForPath(specialValues[i], mappings, matchMode);
+        const specialValue = specialValues[i];
+        const canResolveOutsideErrors = Boolean(options.allowGlobalAutoResolve);
+        const canAttemptAutoResolve = !options.onlyErrorNodes || nodeIsInErrors || canResolveOutsideErrors;
+        const canReportNoMapping = !options.onlyErrorNodes || nodeIsInErrors;
+        let replacement = findMappingForPath(specialValue, mappings, matchMode, {
+          postfixes: options.postfixes || [],
+        });
         let autoResolved = false;
 
-        if (!replacement && options.autoResolve) {
-          replacement = autoResolveWidget(registryEntry, specialValues[i], node, availableModels);
+        if (!replacement && !isLikelyModelPathValue(specialValue)) {
+          continue;
+        }
+
+        if (!replacement && options.autoResolve && canAttemptAutoResolve) {
+          replacement = autoResolveWidgetWithPostfixes(registryEntry, specialValue, node, availableModels, options.postfixes || []);
           if (replacement) {
             autoResolved = true;
-            console.log("[Fix Model Paths] Auto-resolved", specialValues[i], "->", replacement, "on node", node.id, node.type, "slot", slotName);
+            console.log("[Fix Model Paths] Auto-resolved", specialValue, "->", replacement, "on node", node.id, node.type, "slot", slotName);
           }
         }
 
         if (!replacement) {
-          if (!autoResolved) {
-            console.debug("[Fix Model Paths] No mapping for", specialValues[i], "on node", node.id, node.type, "slot", slotName);
+          if (!autoResolved && canReportNoMapping) {
+            console.debug("[Fix Model Paths] No mapping for", specialValue, "on node", node.id, node.type, "slot", slotName);
+            reportNoMapping(report, node, slotName, specialValue);
           }
-          reportNoMapping(report, node, slotName, specialValues[i]);
           continue;
         }
 
-        if (normalizePath(replacement) === normalizePath(specialValues[i])) {
-          console.log("[Fix Model Paths] Skipping no-op for", specialValues[i], "on node", node.id, node.type, "slot", slotName);
-          reportNoOp(report, node, slotName, specialValues[i], replacement);
+        if (normalizePath(replacement) === normalizePath(specialValue)) {
+          console.log("[Fix Model Paths] Skipping no-op for", specialValue, "on node", node.id, node.type, "slot", slotName);
+          reportNoOp(report, node, slotName, specialValue, replacement);
           continue;
         }
 
@@ -420,7 +677,7 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
           registryEntry,
           widget: null,
           widgetName: slotName,
-          before: specialValues[i],
+          before: specialValue,
           after: replacement,
           autoResolved,
           isSpecialSlot: true,
@@ -433,6 +690,9 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
     for (const pathWidget of pathWidgets) {
       if (
         options.onlyErrorNodes &&
+        nodeIsInErrors &&
+        !pathWidget.isLinkedInput &&
+        !String(pathWidget.widgetName || "").startsWith("object:") &&
         !isWidgetInError(
           node.id,
           pathWidget.widgetName,
@@ -445,11 +705,20 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
         continue;
       }
 
-      let replacement = findMappingForPath(pathWidget.value, mappings, matchMode);
+      const canResolveOutsideErrors = Boolean(options.allowGlobalAutoResolve);
+      const canAttemptAutoResolve = !options.onlyErrorNodes || nodeIsInErrors || pathWidget.isLinkedInput || canResolveOutsideErrors;
+      const canReportNoMapping = !options.onlyErrorNodes || nodeIsInErrors || pathWidget.isLinkedInput;
+      let replacement = findMappingForPath(pathWidget.value, mappings, matchMode, {
+        postfixes: options.postfixes || [],
+      });
       let autoResolved = false;
 
-      if (!replacement && options.autoResolve) {
-        replacement = autoResolveWidget(registryEntry, pathWidget.value, node, availableModels);
+      if (!replacement && !isLikelyModelPathValue(pathWidget.value)) {
+        continue;
+      }
+
+      if (!replacement && options.autoResolve && canAttemptAutoResolve) {
+        replacement = autoResolveWidgetWithPostfixes(registryEntry, pathWidget.value, node, availableModels, options.postfixes || []);
         if (replacement) {
           autoResolved = true;
           console.log("[Fix Model Paths] Auto-resolved", pathWidget.value, "->", replacement, "on node", node.id, node.type);
@@ -457,32 +726,53 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
       }
 
       if (!replacement) {
-        if (!autoResolved) {
+        if (!autoResolved && canReportNoMapping) {
           console.debug("[Fix Model Paths] No mapping for", pathWidget.value, "on node", node.id, node.type);
+          reportNoMapping(report, pathWidget.node || node, pathWidget.widgetName, pathWidget.value);
         }
-        reportNoMapping(report, node, pathWidget.widgetName, pathWidget.value);
         continue;
       }
 
       if (normalizePath(replacement) === normalizePath(pathWidget.value)) {
         console.log("[Fix Model Paths] Skipping no-op for", pathWidget.value, "on node", node.id, node.type);
-        reportNoOp(report, node, pathWidget.widgetName, pathWidget.value, replacement);
+        reportNoOp(report, pathWidget.node || node, pathWidget.widgetName, pathWidget.value, replacement);
         continue;
       }
 
       results.push({
-        node,
+        node: pathWidget.node || node,
         registryEntry,
         widget: pathWidget.widget,
-        widgetName: pathWidget.widgetName,
+        widgetName: pathWidget.linkedWidgetName || pathWidget.widgetName,
+        displayWidgetName: pathWidget.widgetName,
         before: pathWidget.value,
         after: replacement,
         autoResolved,
+        isLinkedInput: pathWidget.isLinkedInput,
+        targetNode: pathWidget.targetNode,
       });
     }
   }
+  }
 
-  return results;
+  const seenFixes = new Set();
+  const uniqueResults = [];
+  for (const fix of results) {
+    const key = `${fix.node?.id}|${fix.widgetName}|${fix.before}|${fix.after}`;
+    if (seenFixes.has(key)) {
+      continue;
+    }
+    seenFixes.add(key);
+    uniqueResults.push(fix);
+  }
+
+  for (const nodeId of errorWidgetMap.keys()) {
+    if (!findNodeInGraphs(graphs, nodeId)) {
+      reportSkipped(report, { id: nodeId, type: "Unknown/Subgraph" }, "", "validation node is not in active graph");
+    }
+  }
+
+  return uniqueResults;
 }
 
 export async function fixAllModelPaths() {
@@ -498,13 +788,10 @@ export async function fixAllModelPaths() {
     validation = { valid: false, node_errors: {} };
   }
 
-  if (!validationError && validation.valid) {
-    console.log("[Fix Model Paths] Workflow already validates, nothing to fix");
-    return { fixed: 0, remainingNodeErrors: {}, message: "Workflow already validates" };
-  }
-
   const hasNodeErrors = Object.keys(validation.node_errors || {}).length > 0;
   const onlyErrorNodes = !validationError && hasNodeErrors;
+  const workflowAlreadyValid = !validationError && validation.valid && !hasNodeErrors;
+  const allowGlobalAutoResolve = !validationError && validation.valid && hasNodeErrors;
 
   console.log("[Fix Model Paths] Validate result:", {
     valid: validation.valid,
@@ -512,23 +799,30 @@ export async function fixAllModelPaths() {
     onlyErrorNodes,
   });
 
-  const [mappings, availableModels] = await Promise.all([
+  const [mappings, availableModels, postfixes] = await Promise.all([
     getMappings(),
     getAvailableModels().catch((err) => {
       console.warn("[Fix Model Paths] Failed to fetch available models for auto-resolve", err);
       return {};
     }),
+    getPostfixes().catch((err) => {
+      console.warn("[Fix Model Paths] Failed to fetch postfixes", err);
+      return [];
+    }),
   ]);
 
-  console.log("[Fix Model Paths] Mappings loaded:", mappings.length);
+  console.log("[Fix Model Paths] Mappings loaded:", mappings.length, "postfixes:", postfixes);
+  console.table(describeMappings(mappings));
 
   const report = createFixReport();
   const fixes = scanGraphForPathWidgets(app.graph, mappings, {
     onlyErrorNodes,
     nodeErrors: validation.node_errors,
     matchMode: "auto",
-    autoResolve: true,
+    autoResolve: !workflowAlreadyValid,
+    allowGlobalAutoResolve,
     availableModels,
+    postfixes,
     report,
   });
 
@@ -567,6 +861,7 @@ export async function fixAllModelPaths() {
       nodeId: fix.node.id,
       nodeType: fix.node.type,
       widget: fix.widgetName,
+      displayWidget: fix.displayWidgetName || fix.widgetName,
       before: fix.before,
       after: fix.after,
       source: fix.autoResolved ? "auto-resolve" : "mapping",
@@ -583,6 +878,9 @@ export async function fixAllModelPaths() {
   for (const fix of fixes) {
     if (fix.node) {
       fixedNodeIds.add(String(fix.node.id));
+      if (fix.targetNode) {
+        fixedNodeIds.add(String(fix.targetNode.id));
+      }
       try {
         if (typeof fix.node.updateOutputDisplay === "function") fix.node.updateOutputDisplay();
         if (typeof fix.node.onResize === "function") fix.node.onResize();
@@ -628,6 +926,8 @@ export async function fixAllModelPaths() {
     remainingNodeErrors: nextValidation.node_errors || {},
     message: fixes.length
       ? `Fixed ${fixes.length} path widget(s)`
-      : "No mapped path fixes found for validation errors",
+      : workflowAlreadyValid
+        ? "Workflow validates; no mapped path replacements found"
+        : "No mapped path fixes found for validation errors",
   };
 }
