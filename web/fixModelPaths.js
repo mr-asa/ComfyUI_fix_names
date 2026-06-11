@@ -17,9 +17,16 @@ import {
 import { loadNodeLibrary, refreshNodeLibrary, showAddNodeToLibraryDialog } from "./nodeLibrary.js";
 import { getPostfixes, savePostfixes } from "./mappingApi.js";
 import { registerPathNodeRegistryEntry } from "./pathNodeRegistry.js";
+import {
+  getUnmatchedModelBasenamesForNode,
+  openModelSearch,
+  refreshAndGetUnmatchedModelBasenamesForNode,
+  warmModelSearchCache,
+} from "./modelSearchMenu.js";
 
 const EXTENSION_NAME = "fix_names.fixModelPaths";
 const pendingLibraryNodeIds = new Set();
+const patchedNodeMenuTypes = new WeakSet();
 
 console.log("[Fix Model Paths] Extension loaded", { registrySize: PATH_NODE_REGISTRY?.length });
 
@@ -80,6 +87,24 @@ async function onEditPostfixes() {
   } catch (error) {
     console.error(error);
     showToast(`Postfix edit failed: ${error.message}`);
+  }
+}
+
+async function onFindModel(node, modelName = null) {
+  try {
+    const names = modelName
+      ? [modelName]
+      : await refreshAndGetUnmatchedModelBasenamesForNode(node);
+
+    if (names.length === 0) {
+      showToast("No unmatched model names found on this node");
+      return;
+    }
+
+    openModelSearch(names[0]);
+  } catch (error) {
+    console.error(error);
+    showToast(`Find Model failed: ${error.message}`);
   }
 }
 
@@ -236,6 +261,86 @@ function scheduleNodeLibraryInit() {
 }
 
 scheduleNodeLibraryInit();
+warmModelSearchCache();
+
+function buildNodeMenuItems(node) {
+  const items = [];
+
+  if (hasPendingNodeFix(node)) {
+    const saveAction = pendingLibraryNodeIds.has(String(node.id))
+      ? () => onNodeMenuActionWithLibrary(node, "save")
+      : () => onNodeMenuAction(node, "save");
+
+    items.push({
+      content: "Save Fixed 🦊",
+      callback: saveAction,
+    });
+    items.push({
+      content: "Cancel Fix 🦊",
+      callback: () => onNodeMenuAction(node, "cancel"),
+    });
+  }
+
+  const registryEntry = PATH_NODE_REGISTRY.find((entry) => entry.matches(node));
+  const discoveredWidgets = getDiscoveredWidgetsForNode(node);
+  const hasStringWidgets = getAllStringWidgets(node).length > 0;
+
+  if (registryEntry || discoveredWidgets.length > 0 || hasStringWidgets) {
+    items.push({
+      content: "Fix Node 🦊",
+      callback: () => onNodeMenuAction(node, "fix"),
+    });
+  }
+
+  const unmatchedModels = getUnmatchedModelBasenamesForNode(node);
+  if (unmatchedModels.length === 1) {
+    items.push({
+      content: `Find Model: ${unmatchedModels[0]} 🦊`,
+      callback: () => onFindModel(node, unmatchedModels[0]),
+    });
+  } else if (unmatchedModels.length > 1) {
+    items.push({
+      content: "Find Model 🦊",
+      submenu: {
+        options: unmatchedModels.map((modelName) => ({
+          content: modelName,
+          callback: () => onFindModel(node, modelName),
+        })),
+      },
+    });
+  }
+
+  if (!registryEntry && hasStringWidgets) {
+    items.push({
+      content: "Fix Node & Add to Library 🦊",
+      callback: () => onNodeMenuActionWithLibrary(node, "fix"),
+    });
+  }
+
+  return items;
+}
+
+function patchNodeMenu(nodeType) {
+  const prototype = nodeType?.prototype;
+  if (!prototype || patchedNodeMenuTypes.has(prototype)) {
+    return;
+  }
+
+  patchedNodeMenuTypes.add(prototype);
+  const originalGetExtraMenuOptions = prototype.getExtraMenuOptions;
+
+  prototype.getExtraMenuOptions = function getFixModelPathsExtraMenuOptions(canvas, options) {
+    const originalItems = originalGetExtraMenuOptions?.apply(this, arguments);
+    const existing = Array.isArray(originalItems) ? [...originalItems] : [];
+    const fixItems = buildNodeMenuItems(this);
+
+    if (fixItems.length === 0) {
+      return existing;
+    }
+
+    return [...existing, ...fixItems];
+  };
+}
 
 console.log("[Fix Model Paths] Registering extension");
 app.registerExtension({
@@ -243,6 +348,11 @@ app.registerExtension({
 
   beforeRegisterNodeDef(nodeType, nodeData) {
     discoverPathWidgetsFromNodeDef(nodeData?.name || nodeType.comfyClass || nodeType.name, nodeData);
+    patchNodeMenu(nodeType);
+  },
+
+  nodeCreated(node) {
+    patchNodeMenu(node?.constructor);
   },
 
   getCanvasMenuItems(canvas) {
@@ -260,41 +370,6 @@ app.registerExtension({
   },
 
   getNodeMenuItems(node) {
-    const items = [];
-
-    if (hasPendingNodeFix(node)) {
-      const saveAction = pendingLibraryNodeIds.has(String(node.id))
-        ? () => onNodeMenuActionWithLibrary(node, "save")
-        : () => onNodeMenuAction(node, "save");
-
-      items.push({
-        content: "Save Fixed 🦊",
-        callback: saveAction,
-      });
-      items.push({
-        content: "Cancel Fix 🦊",
-        callback: () => onNodeMenuAction(node, "cancel"),
-      });
-    }
-
-    const registryEntry = PATH_NODE_REGISTRY.find((entry) => entry.matches(node));
-    const discoveredWidgets = getDiscoveredWidgetsForNode(node);
-    const hasStringWidgets = getAllStringWidgets(node).length > 0;
-
-    if (registryEntry || discoveredWidgets.length > 0 || hasStringWidgets) {
-      items.push({
-        content: "Fix Node 🦊",
-        callback: () => onNodeMenuAction(node, "fix"),
-      });
-    }
-
-    if (!registryEntry && hasStringWidgets) {
-      items.push({
-        content: "Fix Node & Add to Library 🦊",
-        callback: () => onNodeMenuActionWithLibrary(node, "fix"),
-      });
-    }
-
-    return items;
+    return [];
   },
 });
