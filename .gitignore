@@ -1,0 +1,6 @@
+model_path_mappings.local.json
+model_path_mappings.local.json.tmp
+custom_node_library.local.json
+custom_node_library.local.json.tmp
+__pycache__/
+*.pyc
