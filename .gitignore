@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 tests/
 docs/
+node.zip
+.ruff_cache
