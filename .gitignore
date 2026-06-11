@@ -1,9 +1,5 @@
-model_path_mappings.local.json
-model_path_mappings.local.json.tmp
-custom_node_library.local.json
-custom_node_library.local.json.tmp
-model_name_postfixes.local.json
-model_name_postfixes.local.json.tmp
+*.local.*
 __pycache__/
 *.pyc
 tests/
+docs/

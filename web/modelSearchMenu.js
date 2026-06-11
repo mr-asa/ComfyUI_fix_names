@@ -1,5 +1,7 @@
 import { getAvailableModels, getMappings, getPostfixes } from "./mappingApi.js";
 import { findMappingForPath } from "./pathResolver.js";
+import { PATH_NODE_REGISTRY } from "./pathNodeRegistry.js";
+import { getDiscoveredNodeEntryForNode } from "./nodeDiscovery.js";
 import { autoResolveWidgetWithPostfixes } from "./workflowFixer.js";
 
 const MODEL_FILE_EXTENSIONS = [
@@ -125,14 +127,20 @@ export function warmModelSearchCache() {
   }
 }
 
-function hasKnownMatch(item) {
+function getRegistryEntryForNode(node) {
+  return PATH_NODE_REGISTRY.find((entry) => entry.matches(node))
+    || getDiscoveredNodeEntryForNode(node)
+    || null;
+}
+
+function hasKnownMatch(item, registryEntry) {
   const mapping = findMappingForPath(item.value, searchState.mappings, "auto", {
     postfixes: searchState.postfixes,
   });
   if (mapping) return true;
 
   const autoMatch = autoResolveWidgetWithPostfixes(
-    null,
+    registryEntry,
     item.value,
     null,
     searchState.availableModels,
@@ -144,8 +152,9 @@ function hasKnownMatch(item) {
 
 export function getUnmatchedModelBasenamesForNode(node) {
   const names = new Set();
+  const registryEntry = getRegistryEntryForNode(node);
   for (const item of collectNodeModelValues(node)) {
-    if (searchState.loaded && hasKnownMatch(item)) {
+    if (searchState.loaded && hasKnownMatch(item, registryEntry)) {
       continue;
     }
     const basename = basenameOnly(item.value);

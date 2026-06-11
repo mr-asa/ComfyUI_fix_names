@@ -1,6 +1,7 @@
 from aiohttp import web
 import os
 import json
+import logging
 import server
 
 WEB_DIRECTORY = "./web"
@@ -99,6 +100,32 @@ def _log_report_items(title, items, fields):
         print(f"[Fix Model Paths]   ... {len(items) - 200} more")
 
 
+class _ComfyValidationNoiseFilter(logging.Filter):
+    def filter(self, record):
+        if os.path.basename(getattr(record, "pathname", "")) != "execution.py":
+            return True
+
+        message = record.getMessage()
+        return not (
+            message.startswith("Failed to validate prompt for output ")
+            or message.startswith("* ")
+            or message.startswith("  - ")
+            or message == "Output will be ignored"
+        )
+
+
+async def validate_prompt_quietly(prompt_id, prompt, partial_execution_list):
+    import execution
+
+    root_logger = logging.getLogger()
+    noise_filter = _ComfyValidationNoiseFilter()
+    root_logger.addFilter(noise_filter)
+    try:
+        return await execution.validate_prompt(prompt_id, prompt, partial_execution_list)
+    finally:
+        root_logger.removeFilter(noise_filter)
+
+
 @server.PromptServer.instance.routes.get("/fix_model_paths/mappings")
 async def get_model_path_mappings(request):
     try:
@@ -149,9 +176,7 @@ async def validate_workflow_without_queue(request):
         return web.json_response({"error": "prompt must be an object"}, status=400)
 
     import uuid
-    import execution
-
-    valid, error, good_outputs, node_errors = await execution.validate_prompt(
+    valid, error, good_outputs, node_errors = await validate_prompt_quietly(
         str(uuid.uuid4()),
         prompt,
         None,

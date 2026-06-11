@@ -41,6 +41,14 @@ const MODEL_FILE_EXTENSIONS = [
   ".gguf",
 ];
 
+const MODEL_TYPE_ALIASES = {
+  unet: ["diffusion_models"],
+  diffusion_models: ["unet"],
+  clips: ["text_encoders", "clip"],
+  text_encoders: ["clips", "clip"],
+  controlnet: ["controlnet"],
+};
+
 function isLikelyModelPathValue(value) {
   const text = String(value || "").trim();
   const normalized = normalizePath(text);
@@ -98,11 +106,16 @@ function setWidgetValue(node, widget, widgetName, newValue) {
   const detail = getDiscoveredWidgetDetailsForNode(node)
     .find((item) => item.widgetName === widgetName);
   const inputWidgetIndex = getInputWidgetIndex(node, widgetName);
+  const registryEntry = PATH_NODE_REGISTRY.find((entry) => entry.matches(node))
+    || getDiscoveredNodeEntryForNode(node);
+  const registryWidgetIndex = getRegistryWidgetIndex(registryEntry, widgetName);
   const fallbackIndex = widgetIndex >= 0
     ? widgetIndex
     : Number.isInteger(detail?.index)
       ? detail.index
-      : inputWidgetIndex;
+      : Number.isInteger(inputWidgetIndex)
+        ? inputWidgetIndex
+        : registryWidgetIndex;
 
   if (widget) {
     widget.value = newValue;
@@ -305,26 +318,49 @@ function getRuntimePathWidgetNames(node) {
   return [...new Set(names)];
 }
 
-function findAvailableModelMatch(models, wantedVariants, postfixes) {
+function findAvailableModelMatch(models, wantedVariants, postfixes, options = {}) {
   if (!Array.isArray(models)) return null;
 
+  const normalizedWanted = new Set(wantedVariants.map((value) => normalizePath(value)));
+  const ignoredExactValue = options.ignoreExactValue ? normalizePath(options.ignoreExactValue) : null;
+  const exactMatch = models.find((model) => {
+    const normalizedModel = normalizePath(model);
+    return normalizedWanted.has(normalizedModel) && normalizedModel !== ignoredExactValue;
+  });
+  if (exactMatch) return exactMatch;
+
   return models.find((m) => {
+    if (ignoredExactValue && normalizePath(m) === ignoredExactValue) {
+      return false;
+    }
     const variants = basenameVariants(m, postfixes);
     return variants.some((variant) => wantedVariants.includes(variant));
   }) || null;
+}
+
+function getModelTypeCandidates(modelType) {
+  if (!modelType) return [];
+  return [modelType, ...(MODEL_TYPE_ALIASES[modelType] || [])]
+    .filter(Boolean)
+    .filter((value, index, items) => items.indexOf(value) === index);
 }
 
 export function autoResolveWidgetWithPostfixes(registryEntry, widgetValue, node, allAvailable, postfixes = [], widgetOptions = null) {
   const wantedVariants = basenameVariants(widgetValue, postfixes);
   if (wantedVariants.length === 0) return null;
 
-  const optionMatch = findAvailableModelMatch(widgetOptions, wantedVariants, postfixes);
+  const optionMatch = findAvailableModelMatch(widgetOptions, wantedVariants, postfixes, {
+    ignoreExactValue: widgetValue,
+  });
   if (optionMatch) return optionMatch;
 
-  if (registryEntry?.modelType) {
-    const models = allAvailable?.[registryEntry.modelType];
-    const match = findAvailableModelMatch(models, wantedVariants, postfixes);
+  for (const modelType of getModelTypeCandidates(registryEntry?.modelType)) {
+    const match = findAvailableModelMatch(allAvailable?.[modelType], wantedVariants, postfixes);
     if (match) return match;
+  }
+
+  if (registryEntry?.modelType) {
+    return null;
   }
 
   for (const models of Object.values(allAvailable || {})) {
@@ -379,7 +415,12 @@ function registryWidgetsForNode(node, registryEntry) {
   return [...widgets];
 }
 
-function getPathWidgetValue(node, widgetName) {
+function getRegistryWidgetIndex(registryEntry, widgetName) {
+  const index = registryEntry?.widgets?.indexOf(widgetName);
+  return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
+function getPathWidgetValue(node, widgetName, registryEntry = null) {
   const widget = node.widgets?.find((item) => item.name === widgetName);
   if (widget) {
     const index = Number.isInteger(widget.index)
@@ -407,6 +448,15 @@ function getPathWidgetValue(node, widgetName) {
     return {
       widget: null,
       value: node.widgets_values[inputWidgetIndex],
+      options: null,
+    };
+  }
+
+  const registryWidgetIndex = getRegistryWidgetIndex(registryEntry, widgetName);
+  if (Number.isInteger(registryWidgetIndex) && Array.isArray(node.widgets_values)) {
+    return {
+      widget: null,
+      value: node.widgets_values[registryWidgetIndex],
       options: null,
     };
   }
@@ -644,7 +694,7 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
     const effectiveWidgets = registryWidgetsForNode(node, registryEntry);
 
     for (const widgetName of effectiveWidgets) {
-      const { widget, value, options: widgetOptions } = getPathWidgetValue(node, widgetName);
+      const { widget, value, options: widgetOptions } = getPathWidgetValue(node, widgetName, registryEntry);
 
       if (typeof value !== "string") {
         continue;
@@ -706,7 +756,7 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
 
         const specialValue = specialValues[i];
         const canResolveOutsideErrors = Boolean(options.allowGlobalAutoResolve);
-        const canAttemptAutoResolve = !options.onlyErrorNodes || nodeIsInErrors || canResolveOutsideErrors;
+        const canAttemptAutoResolve = !options.onlyErrorNodes || nodeIsInErrors || canResolveOutsideErrors || Boolean(registryEntry?.modelType);
         const canReportNoMapping = !options.onlyErrorNodes || nodeIsInErrors;
         let replacement = findMappingForPath(specialValue, mappings, matchMode, {
           postfixes: options.postfixes || [],
@@ -773,7 +823,7 @@ export function scanGraphForPathWidgets(graph, mappings, options = {}) {
       }
 
       const canResolveOutsideErrors = Boolean(options.allowGlobalAutoResolve);
-      const canAttemptAutoResolve = !options.onlyErrorNodes || nodeIsInErrors || pathWidget.isLinkedInput || canResolveOutsideErrors;
+      const canAttemptAutoResolve = !options.onlyErrorNodes || nodeIsInErrors || pathWidget.isLinkedInput || canResolveOutsideErrors || Boolean(registryEntry?.modelType);
       const canReportNoMapping = !options.onlyErrorNodes || nodeIsInErrors || pathWidget.isLinkedInput;
       let replacement = findMappingForPath(pathWidget.value, mappings, matchMode, {
         postfixes: options.postfixes || [],
@@ -893,7 +943,7 @@ export async function fixAllModelPaths() {
     onlyErrorNodes,
     nodeErrors: validation.node_errors,
     matchMode: "auto",
-    autoResolve: !workflowAlreadyValid,
+    autoResolve: true,
     allowGlobalAutoResolve,
     availableModels,
     postfixes,

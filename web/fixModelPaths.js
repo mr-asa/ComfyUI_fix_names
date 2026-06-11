@@ -26,7 +26,7 @@ import {
 
 const EXTENSION_NAME = "fix_names.fixModelPaths";
 const pendingLibraryNodeIds = new Set();
-const patchedNodeMenuTypes = new WeakSet();
+let nodeMenuPatched = false;
 
 console.log("[Fix Model Paths] Extension loaded", { registrySize: PATH_NODE_REGISTRY?.length });
 
@@ -288,7 +288,7 @@ function buildNodeMenuItems(node) {
   if (registryEntry || discoveredWidgets.length > 0 || hasStringWidgets) {
     items.push({
       content: "Fix Node 🦊",
-      callback: () => onNodeMenuAction(node, "fix"),
+      callback: () => onNodeMenuActionWithLibrary(node, "fix"),
     });
   }
 
@@ -310,35 +310,85 @@ function buildNodeMenuItems(node) {
     });
   }
 
-  if (!registryEntry && hasStringWidgets) {
-    items.push({
-      content: "Fix Node & Add to Library 🦊",
-      callback: () => onNodeMenuActionWithLibrary(node, "fix"),
-    });
-  }
-
   return items;
 }
 
-function patchNodeMenu(nodeType) {
-  const prototype = nodeType?.prototype;
-  if (!prototype || patchedNodeMenuTypes.has(prototype)) {
+function isFixModelPathsMenuItem(item) {
+  return typeof item?.content === "string" && item.content.includes("🦊");
+}
+
+function removeExistingNodeMenuItems(options) {
+  for (let i = options.length - 1; i >= 0; i--) {
+    if (isFixModelPathsMenuItem(options[i])) {
+      options.splice(i, 1);
+    }
+  }
+
+  for (let i = options.length - 1; i > 0; i--) {
+    if (options[i] === null && options[i - 1] === null) {
+      options.splice(i, 1);
+    }
+  }
+
+  if (options[0] === null) {
+    options.shift();
+  }
+  if (options[options.length - 1] === null) {
+    options.pop();
+  }
+}
+
+function findNodeMenuInsertIndex(options) {
+  const preferredLabels = [
+    "Recreate node",
+    "Clone",
+    "Remove",
+  ];
+
+  for (const label of preferredLabels) {
+    const index = options.findIndex((item) => item?.content === label);
+    if (index >= 0) {
+      return index;
+    }
+  }
+
+  return options.length;
+}
+
+function insertNodeMenuBlock(options, items) {
+  if (items.length === 0) {
     return;
   }
 
-  patchedNodeMenuTypes.add(prototype);
-  const originalGetExtraMenuOptions = prototype.getExtraMenuOptions;
+  removeExistingNodeMenuItems(options);
+  const insertIndex = findNodeMenuInsertIndex(options);
+  const block = [];
 
-  prototype.getExtraMenuOptions = function getFixModelPathsExtraMenuOptions(canvas, options) {
-    const originalItems = originalGetExtraMenuOptions?.apply(this, arguments);
-    const existing = Array.isArray(originalItems) ? [...originalItems] : [];
-    const fixItems = buildNodeMenuItems(this);
+  if (insertIndex > 0 && options[insertIndex - 1] !== null) {
+    block.push(null);
+  }
 
-    if (fixItems.length === 0) {
-      return existing;
-    }
+  block.push(...items);
 
-    return [...existing, ...fixItems];
+  if (insertIndex < options.length && options[insertIndex] !== null) {
+    block.push(null);
+  }
+
+  options.splice(insertIndex, 0, ...block);
+}
+
+function patchNodeMenuOptions() {
+  if (nodeMenuPatched || typeof LGraphCanvas === "undefined" || !LGraphCanvas?.prototype?.getNodeMenuOptions) {
+    return;
+  }
+
+  nodeMenuPatched = true;
+  const originalGetNodeMenuOptions = LGraphCanvas.prototype.getNodeMenuOptions;
+
+  LGraphCanvas.prototype.getNodeMenuOptions = function getFixModelPathsNodeMenuOptions(node) {
+    const options = originalGetNodeMenuOptions.apply(this, arguments) || [];
+    insertNodeMenuBlock(options, buildNodeMenuItems(node));
+    return options;
   };
 }
 
@@ -346,13 +396,12 @@ console.log("[Fix Model Paths] Registering extension");
 app.registerExtension({
   name: EXTENSION_NAME,
 
-  beforeRegisterNodeDef(nodeType, nodeData) {
-    discoverPathWidgetsFromNodeDef(nodeData?.name || nodeType.comfyClass || nodeType.name, nodeData);
-    patchNodeMenu(nodeType);
+  setup() {
+    patchNodeMenuOptions();
   },
 
-  nodeCreated(node) {
-    patchNodeMenu(node?.constructor);
+  beforeRegisterNodeDef(nodeType, nodeData) {
+    discoverPathWidgetsFromNodeDef(nodeData?.name || nodeType.comfyClass || nodeType.name, nodeData);
   },
 
   getCanvasMenuItems(canvas) {

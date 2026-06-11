@@ -1,35 +1,25 @@
 # ComfyUI Fix Model Paths
 
-Adds a ComfyUI canvas right-click menu item named `Fix Model Paths`.
+Расширение для исправления сломанных путей к моделям (чекпоинты, LoRA и т.д.) в рабочих процессах ComfyUI.
 
-## What it does
+## Как использовать
 
-`Fix Model Paths` validates the current workflow without queueing it. It only changes model/LoRA path widgets that are part of ComfyUI validation errors. If the workflow already validates, nothing is changed.
+### Массовое исправление
+1. Правый клик по пустому полю холста
+2. Выберите «Fix Model Paths»
+3. Расширение найдет ошибки и заменит пути на рабочие
 
-## Bulk flow
+### Исправление отдельного узла
+1. Правый клик по узлу с ошибкой
+2. Выберите «Fix Node»
+3. Выберите правильную модель в выпадающем списке
+4. Нажмите «Save Fixed» или правый клик → «Save Fixed»
 
-1. Right-click empty canvas.
-2. Choose `Fix Model Paths`.
-3. The extension validates the workflow.
-4. Matching path widgets on failed nodes are replaced using the local mapping file.
-5. The workflow is validated again.
-6. If errors remain, use the node-level flow.
+### Поиск модели
+- Правый клик по узлу → «Find Model» — открывает поиск в Google по имени модели
 
-## Node-level flow
+## Возможности
 
-1. Right-click a node with a broken model/LoRA path.
-2. Choose `Fix Node`.
-3. The current bad value is stored in memory and the node shows `Ready: Save Fixed`.
-4. Select the correct model in the same widget.
-5. Click `Ready: Save Fixed` or right-click the node and choose `Save Fixed`.
-6. The old value → new value pair is saved locally.
-
-## Local mapping file
-
-Mappings are stored in this plugin folder as:
-
-```text
-model_path_mappings.local.json
-```
-
-This file is ignored by git.
+- **Автозамена** — сохраняет пары «было → стало» и применяет их автоматически
+- **Постфиксы** — игнорирует суффиксы моделей (kj, fp8, q4_k_s и др.) при поиске. Настраивается через «Edit Model Postfixes»
+- Поддержка: чекпоинты, LoRA, VAE, UNET, ControlNet, CLIP и др.
