@@ -5,3 +5,5 @@ tests/
 docs/
 node.zip
 .ruff_cache
+
+.dirac-cache/
