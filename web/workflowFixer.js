@@ -1,7 +1,7 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
-import { getMappings, validateWorkflow, getAvailableModels, getPostfixes, logFixReport as sendFixReport } from "./mappingApi.js";
-import { basenameVariants, describeMappings, findMappingForPath } from "./pathResolver.js";
+import { getMappings, validateWorkflow, getAvailableModels, getPostfixes, loadMatchingRules, logFixReport as sendFixReport } from "./mappingApi.js";
+import { basenameVariants, looseMatchScore, describeMappings, findMappingForPath } from "./pathResolver.js";
 import { PATH_NODE_REGISTRY } from "./pathNodeRegistry.js";
 import {
   getDiscoveredNodeEntryForNode,
@@ -323,25 +323,28 @@ function findAvailableModelMatch(models, wantedVariants, postfixes, options = {}
 
   const normalizedWanted = new Set(wantedVariants.map((value) => normalizePath(value)));
   const ignoredExactValue = options.ignoreExactValue ? normalizePath(options.ignoreExactValue) : null;
-  const ignoredBasename = ignoredExactValue ? ignoredExactValue.split("/").pop() : null;
-  const ignoreBasenameOnly = Boolean(options.ignoreBasenameOnly);
   const exactMatch = models.find((model) => {
     const normalizedModel = normalizePath(model);
     return normalizedWanted.has(normalizedModel) && normalizedModel !== ignoredExactValue;
   });
   if (exactMatch) return exactMatch;
 
-  return models.find((m) => {
+  let best = null;
+  let bestScore = 0;
+  for (const m of models) {
     const normalizedModel = normalizePath(m);
-    if (ignoredExactValue && normalizedModel === ignoredExactValue) {
-      return false;
-    }
-    if (ignoreBasenameOnly && ignoredBasename && normalizedModel.split("/").pop() === ignoredBasename) {
-      return false;
-    }
+    if (ignoredExactValue && normalizedModel === ignoredExactValue) continue;
     const variants = basenameVariants(m, postfixes);
-    return variants.some((variant) => wantedVariants.includes(variant));
-  }) || null;
+    // 4: postfix-aware exact basename; 3: separator-insensitive; 2: ignoring quant/precision tokens
+    const score = variants.some((variant) => wantedVariants.includes(variant))
+      ? 4
+      : looseMatchScore(wantedVariants, m, postfixes);
+    if (score > bestScore) {
+      best = m;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 function getModelTypeCandidates(modelType) {
@@ -357,7 +360,6 @@ export function autoResolveWidgetWithPostfixes(registryEntry, widgetValue, node,
 
   const optionMatch = findAvailableModelMatch(widgetOptions, wantedVariants, postfixes, {
     ignoreExactValue: widgetValue,
-    ignoreBasenameOnly: true,
   });
   if (optionMatch) return optionMatch;
 
@@ -944,7 +946,8 @@ export async function fixAllModelPaths() {
       console.warn("[Fix Model Paths] Failed to fetch postfixes", err);
       return [];
     }),
-  ]);
+    loadMatchingRules(),
+  ]).then((results) => results.slice(0, 3));
 
   console.log("[Fix Model Paths] Mappings loaded:", mappings.length, "postfixes:", postfixes);
   console.table(describeMappings(mappings));

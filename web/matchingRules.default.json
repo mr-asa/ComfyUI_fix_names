@@ -1,0 +1,46 @@
+{
+  "_comment": "Built-in rules for loose model-name matching. Each group's pattern is a regex fragment matched against whole '_'-separated tokens of a lowercased file stem (consecutive tokens may be glued, e.g. fp4mixed). Users can switch groups off and add their own words via 'Model Name Rules' in the canvas menu (stored in model_matching_rules.local.json).",
+  "ignore_groups": [
+    {
+      "id": "precision",
+      "label": "Precision: fp4, fp8, fp16, fp32, bf16, f16, half",
+      "pattern": "fp(?:4|8|16|32)?|bf16|f16|f32|half"
+    },
+    {
+      "id": "fp8-variants",
+      "label": "FP variants: e4m3fn, e5m2, nvfp4, mxfp4, scaled, mixed",
+      "pattern": "nvfp4|mxfp4|e4m3fn(?:uz)?|e5m2(?:fnuz)?|scaled|mixed"
+    },
+    {
+      "id": "int-quant",
+      "label": "Integer quant: int4, int8, nf4, w4a16, w8a8, convrot",
+      "pattern": "int(?:4|8)|nf4|w4a16|w8a8|convrot"
+    },
+    {
+      "id": "gguf-quant",
+      "label": "GGUF quant: Q4_K_M, Q8_0, IQ4_XS, gguf",
+      "pattern": "i?q[0-9]+(?:_(?:k|0|1|s|m|l|xs|xxs|nl))*|gguf"
+    },
+    {
+      "id": "quant-tools",
+      "label": "Quant tools: svdq, awq, gptq, bnb",
+      "pattern": "svdq|awq|gptq|bnb"
+    },
+    {
+      "id": "file-format",
+      "label": "File extensions inside names: safetensors, ckpt, pt, pth, bin, sft",
+      "pattern": "safetensors|sft|ckpt|pth|pt|bin"
+    },
+    {
+      "id": "encoder",
+      "label": "Encoder: enc, encoder",
+      "pattern": "enc|encoder"
+    },
+    {
+      "id": "misc",
+      "label": "Misc: fast, pruned, ema, noema, fullema, comfy, converted, txtattn",
+      "pattern": "fast|txtattn|pruned|ema|noema|fullema|comfy|converted"
+    }
+  ],
+  "aliases": {}
+}

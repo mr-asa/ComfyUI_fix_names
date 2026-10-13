@@ -1,3 +1,5 @@
+import { setMatchingRules } from "./pathResolver.js";
+
 export async function getMappings() {
   const response = await fetch("/fix_model_paths/mappings", {
     method: "GET",
@@ -125,6 +127,72 @@ export async function savePostfixes(postfixes) {
 
   if (!response.ok) {
     throw new Error(`Unable to save postfixes: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+let defaultRulesPromise = null;
+
+function loadDefaultRules() {
+  if (!defaultRulesPromise) {
+    defaultRulesPromise = fetch(new URL("./matchingRules.default.json", import.meta.url))
+      .then((response) => (response.ok ? response.json() : {}))
+      .catch(() => ({}));
+  }
+  return defaultRulesPromise;
+}
+
+export async function getUserMatchingRules() {
+  const response = await fetch("/fix_model_paths/matching_rules", {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to load matching rules: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function saveUserMatchingRules(rules) {
+  const response = await fetch("/fix_model_paths/matching_rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rules }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to save matching rules: ${response.status}`);
+  }
+
+  const data = await response.json();
+  setMatchingRules({ user: data.rules });
+  return data;
+}
+
+// Loads built-in + user rules and applies them to the matcher. Never throws.
+export async function loadMatchingRules() {
+  const [defaults, user] = await Promise.all([
+    loadDefaultRules(),
+    getUserMatchingRules().catch((err) => {
+      console.warn("[Fix Model Paths] Failed to load user matching rules", err);
+      return {};
+    }),
+  ]);
+  setMatchingRules({ defaults, user });
+}
+
+export async function deleteMapping(before) {
+  const response = await fetch("/fix_model_paths/mappings/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ before }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to delete mapping: ${response.status}`);
   }
 
   return response.json();

@@ -15,10 +15,10 @@ import {
   getDiscoveredWidgetsForNode,
 } from "./nodeDiscovery.js";
 import { loadNodeLibrary, refreshNodeLibrary, showAddNodeToLibraryDialog } from "./nodeLibrary.js";
-import { getPostfixes, savePostfixes } from "./mappingApi.js";
+import { openMatchingRulesEditor } from "./matchingRulesUi.js";
 import { registerPathNodeRegistryEntry } from "./pathNodeRegistry.js";
 import {
-  getUnmatchedModelBasenamesForNode,
+  getModelBasenamesForNode,
   openModelSearch,
   refreshAndGetUnmatchedModelBasenamesForNode,
   warmModelSearchCache,
@@ -62,31 +62,6 @@ async function onFixAllPaths() {
   } catch (error) {
     console.error(error);
     showToast(`Fix Model Paths failed: ${error.message}`);
-  }
-}
-
-async function onEditPostfixes() {
-  try {
-    const current = await getPostfixes();
-    const value = window.prompt(
-      "Model name postfixes, comma-separated. Example: kj, fp8, q4_k_s",
-      current.join(", "),
-    );
-
-    if (value == null) {
-      return;
-    }
-
-    const postfixes = value
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    const result = await savePostfixes(postfixes);
-    showToast(`Saved ${result.postfixes?.length || 0} postfix(es)`);
-  } catch (error) {
-    console.error(error);
-    showToast(`Postfix edit failed: ${error.message}`);
   }
 }
 
@@ -292,17 +267,18 @@ function buildNodeMenuItems(node) {
     });
   }
 
-  const unmatchedModels = getUnmatchedModelBasenamesForNode(node);
-  if (unmatchedModels.length === 1) {
+  // always offered when the node has a model path, even if it already resolves
+  const modelNames = getModelBasenamesForNode(node);
+  if (modelNames.length === 1) {
     items.push({
-      content: `Find Model: ${unmatchedModels[0]} 🦊`,
-      callback: () => onFindModel(node, unmatchedModels[0]),
+      content: `Find Model: ${modelNames[0]} 🦊`,
+      callback: () => onFindModel(node, modelNames[0]),
     });
-  } else if (unmatchedModels.length > 1) {
+  } else if (modelNames.length > 1) {
     items.push({
       content: "Find Model 🦊",
       submenu: {
-        options: unmatchedModels.map((modelName) => ({
+        options: modelNames.map((modelName) => ({
           content: modelName,
           callback: () => onFindModel(node, modelName),
         })),
@@ -412,8 +388,8 @@ app.registerExtension({
         callback: onFixAllPaths,
       },
       {
-        content: "Edit Model Postfixes 🦊",
-        callback: onEditPostfixes,
+        content: "Model Name Rules 🦊",
+        callback: openMatchingRulesEditor,
       },
     ];
   },

@@ -1,5 +1,6 @@
 from aiohttp import web
 import os
+import shutil
 import json
 import logging
 import server
@@ -14,6 +15,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MAPPING_FILE = os.path.join(BASE_DIR, "model_path_mappings.local.json")
 NODE_LIBRARY_FILE = os.path.join(BASE_DIR, "custom_node_library.local.json")
 POSTFIX_FILE = os.path.join(BASE_DIR, "model_name_postfixes.local.json")
+MATCHING_RULES_FILE = os.path.join(BASE_DIR, "model_matching_rules.local.json")
 
 
 def read_mappings():
@@ -65,6 +67,65 @@ def read_postfixes():
         return [str(item).strip() for item in data if str(item).strip()]
     except (OSError, json.JSONDecodeError):
         return []
+
+
+def _clean_str_list(value):
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def sanitize_matching_rules(data):
+    data = data if isinstance(data, dict) else {}
+    aliases = data.get("aliases")
+    clean_aliases = {}
+    if isinstance(aliases, dict):
+        for key, value in aliases.items():
+            key, value = str(key).strip(), str(value).strip()
+            if key and value:
+                clean_aliases[key] = value
+    return {
+        "ignore_tokens": _clean_str_list(data.get("ignore_tokens")),
+        "aliases": clean_aliases,
+        "disabled_defaults": _clean_str_list(data.get("disabled_defaults")),
+    }
+
+
+def read_matching_rules():
+    rules = sanitize_matching_rules({})
+    if os.path.exists(MATCHING_RULES_FILE):
+        try:
+            with open(MATCHING_RULES_FILE, "r", encoding="utf-8") as f:
+                rules = sanitize_matching_rules(json.load(f))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # legacy postfixes are plain ignorable words now; merge them in until the next save
+    known = {token.lower() for token in rules["ignore_tokens"]}
+    for postfix in read_postfixes():
+        if postfix.lower() not in known:
+            rules["ignore_tokens"].append(postfix)
+            known.add(postfix.lower())
+    return rules
+
+
+def write_matching_rules(data):
+    if os.path.exists(MATCHING_RULES_FILE):
+        try:
+            shutil.copyfile(MATCHING_RULES_FILE, f"{MATCHING_RULES_FILE}.bak")
+        except OSError:
+            pass
+    tmp_path = f"{MATCHING_RULES_FILE}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(sanitize_matching_rules(data), f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, MATCHING_RULES_FILE)
+    if read_postfixes():
+        write_postfixes([])  # now part of ignore_tokens
 
 
 def write_postfixes(items):
@@ -160,6 +221,26 @@ async def upsert_model_path_mapping(request):
     else:
         items.append({"before": before.strip(), "after": after.strip()})
 
+    write_mappings(items)
+    return web.json_response({"ok": True, "mappings": items})
+
+
+@server.PromptServer.instance.routes.post("/fix_model_paths/mappings/delete")
+async def delete_model_path_mapping(request):
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    before = payload.get("before")
+    if not isinstance(before, str) or not before.strip():
+        return web.json_response({"error": "before must be a non-empty string"}, status=400)
+
+    key = before.strip().lower()
+    items = [
+        item for item in read_mappings()
+        if not (isinstance(item, dict) and str(item.get("before", "")).strip().lower() == key)
+    ]
     write_mappings(items)
     return web.json_response({"ok": True, "mappings": items})
 
@@ -278,7 +359,7 @@ async def save_node_library_entry(request):
 @server.PromptServer.instance.routes.get("/fix_model_paths/postfixes")
 async def get_model_name_postfixes(request):
     try:
-        return web.json_response(read_postfixes())
+        return web.json_response(read_matching_rules()["ignore_tokens"])
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -294,5 +375,29 @@ async def save_model_name_postfixes(request):
     if not isinstance(postfixes, list):
         return web.json_response({"error": "postfixes must be an array"}, status=400)
 
-    write_postfixes(postfixes)
-    return web.json_response({"ok": True, "postfixes": read_postfixes()})
+    rules = read_matching_rules()
+    rules["ignore_tokens"] = postfixes
+    write_matching_rules(rules)
+    return web.json_response({"ok": True, "postfixes": read_matching_rules()["ignore_tokens"]})
+
+
+@server.PromptServer.instance.routes.get("/fix_model_paths/matching_rules")
+async def get_matching_rules(request):
+    try:
+        return web.json_response(read_matching_rules())
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@server.PromptServer.instance.routes.post("/fix_model_paths/matching_rules")
+async def save_matching_rules(request):
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("rules"), dict):
+        return web.json_response({"error": "rules must be an object"}, status=400)
+
+    write_matching_rules(payload["rules"])
+    return web.json_response({"ok": True, "rules": read_matching_rules()})

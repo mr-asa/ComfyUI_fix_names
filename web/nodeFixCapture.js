@@ -1,5 +1,6 @@
 import { app } from "/scripts/app.js";
 import { saveMapping } from "./mappingApi.js";
+import { offerRuleSuggestion } from "./matchingRulesUi.js";
 import { PATH_NODE_REGISTRY } from "./pathNodeRegistry.js";
 
 const pendingNodeFixes = new Map();
@@ -196,6 +197,7 @@ export async function saveFixedNode(node) {
     }
 
     await saveMapping(capture.before, after);
+    await offerRuleSuggestion(capture.before, after);
     savedMappings.push({ before: capture.before, after });
     setWidgetValue(node, capture.widgetName, after);
     anyChanged = true;

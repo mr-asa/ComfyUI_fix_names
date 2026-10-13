@@ -1,4 +1,4 @@
-import { getAvailableModels, getMappings, getPostfixes } from "./mappingApi.js";
+import { getAvailableModels, getMappings, getPostfixes, loadMatchingRules } from "./mappingApi.js";
 import { findMappingForPath } from "./pathResolver.js";
 import { PATH_NODE_REGISTRY } from "./pathNodeRegistry.js";
 import { getDiscoveredNodeEntryForNode } from "./nodeDiscovery.js";
@@ -109,6 +109,7 @@ async function refreshSearchState() {
     getMappings().catch(() => []),
     getAvailableModels().catch(() => ({})),
     getPostfixes().catch(() => []),
+    loadMatchingRules(),
   ]).then(([mappings, availableModels, postfixes]) => {
     searchState.mappings = mappings;
     searchState.availableModels = availableModels;
@@ -148,6 +149,15 @@ function hasKnownMatch(item, registryEntry) {
     item.options,
   );
   return Boolean(autoMatch);
+}
+
+export function getModelBasenamesForNode(node) {
+  const names = new Set();
+  for (const item of collectNodeModelValues(node)) {
+    const basename = basenameOnly(item.value);
+    if (basename) names.add(basename);
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
 }
 
 export function getUnmatchedModelBasenamesForNode(node) {
