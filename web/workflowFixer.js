@@ -354,7 +354,22 @@ function getModelTypeCandidates(modelType) {
     .filter((value, index, items) => items.indexOf(value) === index);
 }
 
+function containsModel(models, value) {
+  if (!Array.isArray(models)) return false;
+  const wanted = normalizePath(value);
+  return models.some((model) => normalizePath(model) === wanted);
+}
+
 export function autoResolveWidgetWithPostfixes(registryEntry, widgetValue, node, allAvailable, postfixes = [], widgetOptions = null) {
+  // already a valid choice: nothing to fix, never "improve" it to a same-named model in another folder
+  if (containsModel(widgetOptions, widgetValue)) return widgetValue;
+  for (const modelType of getModelTypeCandidates(registryEntry?.modelType)) {
+    if (containsModel(allAvailable?.[modelType], widgetValue)) return widgetValue;
+  }
+  if (!registryEntry?.modelType && Object.values(allAvailable || {}).some((models) => containsModel(models, widgetValue))) {
+    return widgetValue;
+  }
+
   const wantedVariants = basenameVariants(widgetValue, postfixes);
   if (wantedVariants.length === 0) return null;
 
